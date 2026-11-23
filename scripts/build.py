@@ -61,11 +61,30 @@ PHONE = 360  # width the phone poster is drawn at; GitHub scales it to the scree
 GAP = 16  # space between two chambers
 
 # How two slices meet. Stacked images can show a hairline of the page between them when a joint
-# does not fall on a whole pixel of the screen. So the README puts every slice one <sup> deeper
-# than the slice before it. On GitHub a superscript stands half its font size higher and its font
-# is three quarters of its parent's, so each slice rides up over the foot of the slice above it
-# and covers the joint. The foot of a slice therefore holds nothing but soil.
-RAISE = [16 * .5 * .75 ** k for k in range(1, 7)]  # px that slice 2, 3, .. ride up, at GitHub's largest text
+# does not fall on a whole pixel of the screen. So the README lifts every slice a little higher
+# than the slice before it, and each one covers the joint above it. The only tools for that in a
+# README are <sub> and <sup>: on GitHub their font is three quarters of their parent's, a
+# superscript stands half its font size higher and a subscript a quarter lower, and two levels
+# of them are kept (deeper ones are dropped). That gives seven heights, one for each slice.
+LADDER = ("sub sub", "sub", "", "sub sup", "sup sub", "sup", "sup sup")  # what the README wraps each slice in
+
+
+def lift(wrap: str) -> float:
+    """How far up GitHub moves what stands in these elements, in font sizes of the README's text."""
+    up, size = 0.0, 1.0
+    for element in wrap.split():
+        size *= .75
+        up += size * (.5 if element == "sup" else -.25)
+    return up
+
+
+RAISE = [(lift(below) - lift(above)) * 16 for above, below in zip(LADDER, LADDER[1:])]  # px each slice rides up, at GitHub's largest text
+assert min(RAISE) > 1, "a slice no longer rides up over the one before it"
+# A wrapped slice is drawn over an unwrapped one. So at most joints the lower slice covers the
+# foot of the upper one, but above the unwrapped slice it is the other way round: there the
+# upper slice covers the head of the lower one. Whatever gets covered holds nothing but soil.
+HEAD = [below == "" for below in LADDER[1:]]
+SHADOW = 4  # a chamber's shadow reaches this far under it
 SMALLEST = {"wide": 398 / WIDE, "phone": 238 / PHONE}  # the smallest scale GitHub shows each layout at
 STRIP = 56  # height of a slice that holds one caption: GitHub gives a line of a README 24 px at least
 GRID = 4  # the wide poster is cut on every fourth px: such a joint is whole on screens scaled by quarters
@@ -582,7 +601,7 @@ class Card:
 def chamber(card: Card, at: int, x: float, y: float, w: float, h: float) -> None:
     """Slide a chamber under everything drawn since body index at."""
     c = card.c
-    card.body.insert(at, f'<rect x="{num(x)}" y="{num(y + 4)}" width="{num(w)}" height="{num(h)}" rx="13" fill="#000" fill-opacity=".3"/>'
+    card.body.insert(at, f'<rect x="{num(x)}" y="{num(y + SHADOW)}" width="{num(w)}" height="{num(h)}" rx="13" fill="#000" fill-opacity=".3"/>'
                          f'<rect x="{num(x + .5)}" y="{num(y + .5)}" width="{num(w - 1)}" height="{num(h - 1)}" '
                          f'rx="12" fill="{c["surface"]}" stroke="{c["edge"]}"/>')
 
@@ -1662,18 +1681,19 @@ def poster(layout: str) -> Card:
         """Draw a chamber with its top at top, note where it lies, and return its bottom edge."""
         start = len(card.body)
         bottom = round(draw())
-        card.mark(start, top, bottom)
+        card.mark(start, top, bottom + SHADOW)
         return bottom
 
     def in_caption(y: float, reach: float) -> bool:
         return any(top - reach < y < bottom + reach for top, bottom in captions)
 
     def lap(joint: int) -> float:
-        """How much of the foot of the slice above joint number joint the next slice may cover, in px of the poster."""
+        """How far one slice may reach over the other at joint number joint, in px of the poster."""
         return RAISE[joint] / SMALLEST[layout]
 
     def near_joint(y: float, reach: float) -> bool:
-        return any(at - lap(k) - reach < y < at + reach for k, at in enumerate(card.cuts))
+        return any(at - reach < y < at + lap(k) + reach if HEAD[k] else at - lap(k) - reach < y < at + reach
+                   for k, at in enumerate(card.cuts))
 
     def cut(y: float, down: bool = False) -> int:
         """Cut the poster at y, or at the nearest place above it (down: below it) that the layout allows."""
@@ -1682,9 +1702,16 @@ def poster(layout: str) -> Card:
         card.cuts.append(at)
         return at
 
+    def cut_above(top: float) -> int:
+        """Cut the poster above a chamber whose top edge is at top. The collar of its shaft stands
+        5 px higher. Where the slice above covers the head of this one, the head is soil."""
+        joint = len(card.cuts)
+        return cut(top - 5 - (lap(joint) if HEAD[joint] else 1))
+
     def strip(floor: float, text: str) -> int:
         """A caption in a slice of its own, under a chamber whose bottom edge is at floor. Returns the slice's bottom."""
-        top = cut(floor + lap(len(card.cuts)) + 1, down=True)
+        assert not HEAD[len(card.cuts)], "this joint would cover the caption"
+        top = cut(floor + SHADOW + lap(len(card.cuts)) + 1, down=True)
         end = caption(top + 34, text)
         assert end - s.text_lead == top + 34, "the caption no longer fits on one line"
         return cut(top + STRIP)
@@ -1692,24 +1719,24 @@ def poster(layout: str) -> Card:
     y = round(ground_y + 60)  # top of the first chambers; the shafts run down to here
 
     # The poster is cut into seven slices, the same number in both layouts, because the README
-    # pairs them. Every cut runs through the soil: 6 px above the chamber under it, and far enough
-    # under the chamber above it that the foot of that slice is soil (see RAISE).
+    # pairs them. Every cut runs through the soil between two chambers, and whatever one slice
+    # covers of the other there is soil (see LADDER).
     #   wide:   city | Almaty Seasons and DSS | Arlan School | a caption | Switchyard and Dastar | a caption | earlier jobs
     #   phone:  city | Almaty Seasons | DSS | Arlan School | Switchyard | Dastar | earlier jobs
     if card.phone:
         w = W - 2 * M
         for p, spot in zip(production, ("tower", "stadium")):
             shafts.append((place[spot], y, False))
-            cut(y - 6)
+            cut_above(y)
             y = room(y, lambda: project(card, M, y, w, p, project_measure(card, w, p))) + GAP
         shafts.append((place["school"], y, True))
-        cut(y - 6)
+        cut_above(y)
         y = room(y, lambda: slim(card, M, y, w, arlan))
         y = round(caption(y + 38, ground["open"]) - s.text_lead + 22)
         for p in opensource:
-            cut(y - 6)
+            cut_above(y)
             y = room(y, lambda: project(card, M, y, w, p, project_measure(card, w, p))) + GAP
-        y = round(caption(y - GAP + 40, ground["before"]) - s.text_lead + 20)
+        y = round(caption(y - GAP + 40, ground["before"]) - s.text_lead + 24)
         cut(y - 8)
     else:
         w = (W - 2 * M - GAP) / 2
@@ -1718,12 +1745,12 @@ def poster(layout: str) -> Card:
             shared = {key: max(m[key] for m in measures) for key in measures[0]}  # both chambers keep the same rows
             if spots:
                 shafts += [(place[spot], y, False) for spot in spots]
-                cut(y - 6)
+                cut_above(y)
             y = room(y, lambda: max(project(card, M + i * (w + GAP), y, w, p, shared) for i, p in enumerate(specs)))
             if spots:
-                top = y + GAP + 4
+                top = y + GAP + 8
                 shafts.append((place["school"], top, True))
-                cut(top - 6)
+                cut_above(top)
                 y = strip(room(top, lambda: slim(card, M, top, W - 2 * M, arlan)), ground["open"]) + 6
         y = strip(y, ground["before"]) + 8
 
@@ -1826,10 +1853,11 @@ def main() -> None:
         for part in card.body:  # a moving piece in two slices would have both redrawn for it
             homes = [k for k, (top, bottom) in enumerate(slices, 1) if part.span[0] < bottom and part.span[1] > top]
             assert len(homes) == 1 or not MOVING.search(part), f"a moving piece lies across slices {homes}"
-            for k, at in enumerate(card.cuts):  # the next slice covers the foot of this one: only ground may lie there
-                foot = at - RAISE[k] / SMALLEST[layout]
-                assert part.through or not part.span[0] < at or part.span[1] <= foot, (
-                    f"joint {k + 1} at {at}: something ends at {num(part.span[1])}, in the foot that starts at {num(foot)}")
+            for k, at in enumerate(card.cuts):  # where one slice covers the other, only ground may lie
+                reach = RAISE[k] / SMALLEST[layout]
+                clear = (part.span[1] <= at or part.span[0] >= at + reach) if HEAD[k] else (part.span[0] >= at or part.span[1] <= at - reach)
+                assert part.through or clear, (
+                    f"joint {k + 1} at {at}: something from {num(part.span[0])} to {num(part.span[1])} lies where a slice covers the other")
         sizes = []
         for k, (top, bottom) in enumerate(slices, 1):
             path = out / f"{layout}-{k}.svg"
@@ -1837,10 +1865,11 @@ def main() -> None:
             sizes.append(path.stat().st_size)
         heights = " + ".join(str(bottom - top) for top, bottom in slices)
         print(f"assets/{layout}-1.svg to {layout}-{len(slices)}.svg  {card.w} x {card.h} ({heights})  {sum(sizes) / 1024:.0f} KB")
-    # The joints only close if README.md puts every picture one <sup> deeper than the one before (see RAISE).
-    stack = (ROOT / "README.md").read_text(encoding="utf-8").split("</p>")[0]
-    if len(re.findall(r"<sup><picture>", stack)) != len(RAISE) or stack.count("<picture>") != len(RAISE) + 1:
-        print("README.md no longer nests the seven pictures in <sup>: the slices will not close up")
+    # The joints only close if README.md wraps the seven pictures the way LADDER says.
+    rows = [row.strip() for row in (ROOT / "README.md").read_text(encoding="utf-8").split("</p>")[0].split("<p>")[1].strip().splitlines()]
+    wraps = [("".join(f"<{e}>" for e in wrap.split()), "".join(f"</{e}>" for e in reversed(wrap.split()))) for wrap in LADDER]
+    if len(rows) != len(LADDER) or not all(row.startswith(a + "<picture>") and row.endswith("</picture>" + b) for row, (a, b) in zip(rows, wraps)):
+        print("README.md no longer wraps the seven pictures the way LADDER says: the slices will not close up")
 
 
 if __name__ == "__main__":
