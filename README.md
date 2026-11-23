@@ -1,8 +1,11 @@
 <p>
-  <picture>
-    <source media="(max-width: 640px)" srcset="assets/poster-phone.svg">
-    <img src="assets/poster.svg" width="100%" alt="Zhan Kuatuly. Technical Lead at NDS. The picture is a cutaway: Almaty at night on top, and under the street the back end I build. Under the tower is Almaty Seasons, under the stadium DSS, under the school Arlan School. Deeper are my open source projects, Switchyard and Dastar. At the bottom, as layers of rock, are the companies I worked at before NDS. The text version below has every detail.">
-  </picture>
+  <picture><source media="(max-width: 640px)" srcset="assets/phone-1.svg"><img src="assets/wide-1.svg" width="100%" align="top" alt="Zhan Kuatuly. Technical Lead at NDS. The picture is a cutaway: Almaty at night on top, and under the street the back end I build. Under the tower is Almaty Seasons, under the stadium DSS, under the school Arlan School. Deeper are my open source projects, Switchyard and Dastar. At the bottom, as layers of rock, are the companies I worked at before NDS. The text version below has every detail."></picture>
+  <sup><picture><source media="(max-width: 640px)" srcset="assets/phone-2.svg"><img src="assets/wide-2.svg" width="100%" align="top" alt=""></picture>
+  <sup><picture><source media="(max-width: 640px)" srcset="assets/phone-3.svg"><img src="assets/wide-3.svg" width="100%" align="top" alt=""></picture>
+  <sup><picture><source media="(max-width: 640px)" srcset="assets/phone-4.svg"><img src="assets/wide-4.svg" width="100%" align="top" alt=""></picture>
+  <sup><picture><source media="(max-width: 640px)" srcset="assets/phone-5.svg"><img src="assets/wide-5.svg" width="100%" align="top" alt=""></picture>
+  <sup><picture><source media="(max-width: 640px)" srcset="assets/phone-6.svg"><img src="assets/wide-6.svg" width="100%" align="top" alt=""></picture>
+  <sup><picture><source media="(max-width: 640px)" srcset="assets/phone-7.svg"><img src="assets/wide-7.svg" width="100%" align="top" alt=""></picture></sup></sup></sup></sup></sup></sup>
 </p>
 
 <details>

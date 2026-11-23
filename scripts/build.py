@@ -8,14 +8,18 @@ The poster is a cutaway. On top is the city at night. Under the street is its
 back end: the systems in production, deeper down the open source workshop,
 and at the bottom the earlier jobs as layers of rock, the oldest lowest.
 
-It writes two files:
+It writes the poster twice, each time cut into seven slices from top to bottom:
 
-    assets/poster.svg         846 px wide, for a desktop screen
-    assets/poster-phone.svg   360 px wide, shown on screens up to 640 px wide
+    assets/wide-1.svg  .. wide-7.svg    846 px wide, for a desktop screen
+    assets/phone-1.svg .. phone-7.svg   360 px wide, shown on screens up to 640 px wide
 
-The poster has a dark background of its own, so one file serves both GitHub
-themes. Text is drawn as outlines: it looks the same in every browser and no
-font has to load.
+README.md stacks the seven slices into one picture. They are slices because a
+browser redraws a whole image when anything in it moves: this way it redraws
+only the slices that move, and only while they are on screen.
+
+The poster has a dark background of its own, so the same files serve both
+GitHub themes. Text is drawn as outlines: it looks the same in every browser
+and no font has to load.
 
 What is counted, and can be counted in the file:
   * the stars in the sky: one for every test of Almaty Seasons
@@ -27,11 +31,11 @@ Bars are to scale. Everything else is scenery.
 Every project has a diagram, and each diagram plays its story again and again:
 a request finds its tools, a seat is sold once, a broken stream is finished by
 another model, 5,000 requests ask and one wins, then an AI agent books through
-the MCP server and is audited. In the city, stars dip, the
-tower sends out its rings and cameras flash in the stadium. All of it moves in
-steps on one shared beat (see TICK), so a browser redraws the poster about
-four times a second instead of sixty. With "reduce motion" switched on,
-nothing moves and every diagram shows its last picture.
+the MCP server and is audited. In the city, stars dim and come back, the
+tower sends out its rings and cameras flash in the stadium. All of it glides,
+and all of it on one shared clock of 24 frames a second (see Motion), so a
+browser never redraws the poster more often than that. With "reduce motion"
+switched on, nothing moves and every diagram shows its last picture.
 
 To change a number or a sentence, edit CONTENT and run the script again. The
 scenery is seeded, so the same content always gives the same picture.
@@ -55,6 +59,16 @@ ROOT = Path(__file__).resolve().parent.parent
 WIDE = 846  # width of a profile README on github.com, in px
 PHONE = 360  # width the phone poster is drawn at; GitHub scales it to the screen
 GAP = 16  # space between two chambers
+
+# How two slices meet. Stacked images can show a hairline of the page between them when a joint
+# does not fall on a whole pixel of the screen. So the README puts every slice one <sup> deeper
+# than the slice before it. On GitHub a superscript stands half its font size higher and its font
+# is three quarters of its parent's, so each slice rides up over the foot of the slice above it
+# and covers the joint. The foot of a slice therefore holds nothing but soil.
+RAISE = [16 * .5 * .75 ** k for k in range(1, 7)]  # px that slice 2, 3, .. ride up, at GitHub's largest text
+SMALLEST = {"wide": 398 / WIDE, "phone": 238 / PHONE}  # the smallest scale GitHub shows each layout at
+STRIP = 56  # height of a slice that holds one caption: GitHub gives a line of a README 24 px at least
+GRID = 4  # the wide poster is cut on every fourth px: such a joint is whole on screens scaled by quarters
 
 # --------------------------------------------------------------------------
 # Content. Every number here should be one you can show the source for.
@@ -349,8 +363,25 @@ def plain(markup: str) -> str:
     return re.sub(r"[*`]", "", markup).replace("\u00a0", " ").replace("\n", " ")
 
 
+class Piece(str):
+    """A piece of the drawing that knows which stretch of the poster it lies
+    in, from top to bottom. The poster is cut into slices, and a piece goes
+    into every slice its stretch reaches."""
+    span: tuple[float, float]
+    through: bool  # may it run through a joint between two slices? Only the ground may.
+
+    def __new__(cls, text: str, top: float, bottom: float, through: bool = False) -> "Piece":
+        piece = super().__new__(cls, text)
+        piece.span = (top, bottom)
+        piece.through = through
+        return piece
+
+
 class Card:
-    """One SVG image. Layout code draws on it in px from its top left corner."""
+    """The poster. Layout code draws on it in px from its top left corner. It
+    is written out as a stack of slices, each an SVG image of its own, because
+    a browser redraws a whole image when anything in it moves: a slice is
+    redrawn only for its own motion, and only while it is on screen."""
 
     def __init__(self, layout: str, title: str, desc: str) -> None:
         self.phone = layout == "phone"
@@ -367,6 +398,7 @@ class Card:
         self.defs: list[str] = []
         self.css: list[str] = []
         self.body: list[str] = []
+        self.cuts: list[int] = []  # where one slice ends and the next begins, from the top down
         self.boxes: list[tuple[float, float, float, float]] | None = None  # set to a list to note where text lands
 
     def add(self, *parts: str) -> None:
@@ -506,14 +538,41 @@ class Card:
         del self.body[start:]
         self.body.append(f"<g {attrs}>{inner}</g>")
 
-    def render(self) -> str:
-        glyphs = "".join(f'<path id="{ref}" d="{d}"/>' for ref, d in self._glyphs.items())
-        style = f"<style>{''.join(self.css)}</style>" if self.css else ""
+    def mark(self, start: int, top: float, bottom: float) -> None:
+        """Note that everything drawn since body index start lies between top and bottom."""
+        self.body[start:] = [Piece(part, top, bottom) for part in self.body[start:]]
+
+    def slices(self) -> list[tuple[int, int]]:
+        """Top and bottom of every slice."""
+        edges = [0, *self.cuts, self.h]
+        assert edges == sorted(set(edges)) and all(isinstance(edge, int) for edge in edges), "cuts out of order or between pixels"
+        return list(zip(edges, edges[1:]))
+
+    def render(self, top: int, bottom: int) -> str:
+        """One slice as an SVG image: the pieces that reach into it, and of the
+        outlines, paints and movements only the ones those pieces use. The slice
+        fills its box exactly (preserveAspectRatio none): a browser rounds the
+        box to whole pixels, and a low slice that kept its proportions would
+        then come out some pixels narrower than its neighbours."""
+        assert all(isinstance(part, Piece) for part in self.body), "a piece of the drawing has no place"
+        body = "".join(part for part in self.body if part.span[0] < bottom and part.span[1] > top)
+        body = f'<g clip-path="url(#pc)">{body}</g>'  # the poster's rounded corners
+        defs, found = [], True
+        while found:  # a paint may use another one, so look until nothing new turns up
+            used = set(re.findall(r'url\(#([^)]+)\)|href="#([^"]+)"', body + "".join(defs)))
+            used = {a or b for a, b in used}
+            found = [d for d in self.defs if d not in defs and re.search(r'id="([^"]+)"', d).group(1) in used]
+            defs += found
+        glyphs = "".join(f'<path id="{ref}" d="{d}"/>' for ref, d in self._glyphs.items() if ref in used)
+        classes = {name for names in re.findall(r'class="([^"]+)"', body) for name in names.split()}
+        css = [rule for rule in self.css if rule.startswith("@") or re.match(r"\.([\w-]+)\{", rule).group(1) in classes]
+        style = f"<style>{''.join(css)}</style>" if any(not rule.startswith("@") for rule in css) else ""
+        words = (f' role="img" aria-labelledby="t d"><title id="t">{escape(self.title)}</title><desc id="d">{escape(self.desc)}</desc>'
+                 if top == 0 else ' aria-hidden="true">')  # the first slice speaks for the whole poster
         return (
             f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
-            f'width="{self.w}" height="{self.h}" viewBox="0 0 {self.w} {self.h}" role="img" aria-labelledby="t d">'
-            f'<title id="t">{escape(self.title)}</title><desc id="d">{escape(self.desc)}</desc>'
-            f'<defs>{glyphs}{"".join(self.defs)}</defs>{style}{"".join(self.body)}</svg>\n'
+            f'width="{self.w}" height="{bottom - top}" viewBox="0 {top} {self.w} {bottom - top}" preserveAspectRatio="none"{words}'
+            f'<defs>{glyphs}{"".join(defs)}</defs>{style}{body}</svg>\n'
         )
 
 
@@ -545,15 +604,60 @@ def bars(card: Card, x: float, y: float, width: float, pair: dict) -> None:
 
 
 # --------------------------------------------------------------------------
+# Motion
+# --------------------------------------------------------------------------
+# A browser redraws a whole image every time anything in it changes. So
+# everything here moves on one clock: FRAMES frames to a beat, and a beat is
+# TICK seconds, which makes 24 frames a second. A fade or a glide is written
+# as steps of one frame, and the steps of every part fall on the same frames.
+# The eye reads that as smooth, and the browser redraws a slice of the poster
+# 24 times a second at most, on a screen that could show 60 or 120. Slow
+# things, like a star dimming, move on every second frame: it looks the same
+# and costs half.
+TICK = 0.25  # seconds in a beat; the stories of the diagrams are counted in beats
+FRAMES = 6  # frames in a beat
+FADE = 5  # frames a part takes to light up or to go dark
+
+
+def clock(frames: int) -> str:
+    """So many frames, as a CSS time."""
+    return f"{frames * TICK / FRAMES:.5f}".rstrip("0").rstrip(".") + "s"
+
+
+def moves(name: str, total: int, stops: list[tuple[int, str, bool]], ahead: int = 0, stride: int = 1) -> str:
+    """CSS for a movement that starts again every total frames. A stop is
+    (frame, the look at that frame, glides). With glides, the look changes
+    into the next stop's, one frame at a time; without, it holds until the
+    next stop. ahead is how many frames into the movement the part is when
+    the poster loads. With stride 2 the look changes on every second frame."""
+    assert total % FRAMES == 0, "a movement lasts a whole number of beats, or it drifts off the clock"
+    assert all(frame % stride == 0 for frame, _, _ in stops) and ahead % stride == 0, "off its stride"
+    # of two stops on one frame, the later one counts
+    stops = [stop for stop, after in zip(stops, stops[1:] + [None]) if after is None or after[0] > stop[0]]
+    if stops[0][0] > 0:
+        stops.insert(0, (0, stops[0][1], False))
+    if stops[-1][0] < total:
+        stops.append((total, stops[-1][1], False))
+    assert all(a[0] < b[0] for a, b in zip(stops, stops[1:])) and stops[-1][0] == total, "stops out of order"
+    rules = ""
+    for (frame, look, glides), after in zip(stops, stops[1:] + [None]):
+        pace = f";animation-timing-function:steps({(after[0] - frame) // stride})" if glides and after else ""
+        rules += f"{100 * frame / total:.4f}".rstrip("0").rstrip(".") + f"%{{{look}{pace}}}"
+    start = f" -{clock(ahead)}" if ahead else ""
+    return f".{name}{{animation:{name} {num(total * TICK / FRAMES)}s step-end{start} infinite}}@keyframes {name}{{{rules}}}"
+
+
+# --------------------------------------------------------------------------
 # Diagrams. Every project has one, and they share one language:
 #
 #   a station   a ringed node with a pictogram in it and its name under it
 #   a track     the line from one station to the next
 #   a state     every part is drawn twice, resting and lit. The lit copy
-#               switches on at its beat of the round and stays on to the end
-#               of the round, so the diagram plays its story again and again.
+#               fades in at its beat of the round, or draws itself if it is
+#               a line, and stays lit to the end of the round. So the
+#               diagram plays its story again and again.
 #
-# All of it moves on the same beat as the city (see TICK). With "reduce
+# All of it moves on the same clock as the city (see Motion). With "reduce
 # motion" switched on, the parts just stay lit: the story's last picture.
 # --------------------------------------------------------------------------
 ICONS = {  # pictograms in a 16 px box: (lines to stroke, small shapes to fill)
@@ -587,23 +691,34 @@ ICONS = {  # pictograms in a 16 px box: (lines to stroke, small shapes to fill)
 ROUND = 28  # beats in a diagram's round: the story plays, then the finished picture stands until the round ends
 
 
-def lit(card: Card, start: int, of: int, end: int | None = None) -> str:
-    """The class for a part that is lit from beat start to the end of a round
-    of so many beats, or only as far as beat end. card.phase says how many
-    beats into its round the diagram is when the poster loads, so that
-    neighbours do not all start their stories at the same moment."""
+def lit(card: Card, start: int, of: int, end: int | None = None, draw: int = 0) -> str:
+    """The class for a part that lights up on beat start of a round of so many
+    beats and is dark again by beat end, or by the end of the round. It fades
+    in and out over a few frames. With draw, the part is a line: instead of
+    fading in, it draws itself from its first point over that many beats.
+    card.phase says how many beats into its round the diagram is when the
+    poster loads, so that neighbours do not all start their stories at the
+    same moment."""
     end = of if end is None else end
-    name = f"s{of}_{start}" + ("" if end == of else f"_{end}") + (f"p{card.phase}" if card.phase else "")
+    name = (f"s{of}_{start}" + ("" if end == of else f"_{end}") + (f"d{draw}" if draw else "")
+            + (f"p{card.phase}" if card.phase else ""))
     if name not in card.states:
         card.states.add(name)
-
-        def at(beat: int) -> str:
-            return f"{100 * beat / of:.4f}".rstrip("0").rstrip(".") + "%"
-        frames = (("" if start == 0 else "0%{opacity:0}") + f"{at(start)}{{opacity:1}}"
-                  + ("to{opacity:1}" if end == of else f"{at(end)},to{{opacity:0}}"))
-        ahead = f" -{num(card.phase * TICK)}s" if card.phase else ""
-        card.css.append(f".{name}{{animation:{name} {num(of * TICK)}s step-end{ahead} infinite}}@keyframes {name}{{{frames}}}")
+        a, z = start * FRAMES, end * FRAMES
+        fade = min(FADE, (z - a) // 2)
+        if draw:
+            hidden, shown, gone = "stroke-dashoffset:1;opacity:1", "stroke-dashoffset:0;opacity:1", "stroke-dashoffset:0;opacity:0"
+            stops = [(a, hidden, True), (a + draw * FRAMES, shown, False), (z - fade, shown, True), (z, gone, False)]
+        else:
+            stops = [(a, "opacity:0", True), (a + fade, "opacity:1", False), (z - fade, "opacity:1", True), (z, "opacity:0", False)]
+        card.css.append(moves(name, of * FRAMES, stops, ahead=card.phase * FRAMES))
     return f"st {name}"
+
+
+def draws(card: Card, start: int, of: int, lasts: int = 1, end: int | None = None) -> str:
+    """The attributes of a lit line that draws itself from beat start, in
+    lasts beats: its class, and the dash that makes drawing possible."""
+    return f'class="{lit(card, start, of, end, draw=lasts)}" pathLength="1" stroke-dasharray="1 2"'
 
 
 def glow(card: Card, color: str) -> str:
@@ -643,12 +758,13 @@ def station(card: Card, x: float, y: float, icon: str, color: str, state: str, r
     card.since(start, f'class="{state}"' + ("" if still else ' opacity="0"'))
 
 
-def track(card: Card, d: str, color: str, state: str, width: float = 2, rest: bool = True, extra: str = "") -> None:
-    """A line at rest, and over it the same line lit."""
+def track(card: Card, d: str, color: str, start: int, of: int, lasts: int = 1, width: float = 2, rest: bool = True) -> None:
+    """A line at rest, and over it the same line lit. The lit line draws
+    itself from beat start of the round, in lasts beats."""
     c = card.c
     if rest:
         card.add(f'<path d="{d}" fill="none" stroke="{c["edge"]}" stroke-width="{width}"/>')
-    card.add(f'<path class="{state}" d="{d}" fill="none" stroke="{c[color]}" stroke-width="{width}"{extra}/>')
+    card.add(f'<path {draws(card, start, of, lasts)} d="{d}" fill="none" stroke="{c[color]}" stroke-width="{width}"/>')
 
 
 def station_label(card: Card, x: float, y: float, name: str, note: str = "", fold: float = 0, size: float = 0) -> None:
@@ -695,15 +811,15 @@ def request_path(card: Card, x: float, y: float, w: float, t: dict) -> None:
     rounds = [((4, 13), (-2.5, 2.5)), ((2, 8, 15), (-7.5, -2.5, 2.5)), ((1, 6, 11, 16), (-7.5, -2.5, 2.5, 7.5))]
     for k, (wires, offs) in enumerate(rounds):
         shown = "" if k == 1 else ' opacity="0"'  # standing still, the picture shows the middle round
-        card.add(f'<path class="{lit(card, k * n + 1, 3 * n, (k + 1) * n)}" d="{"".join(wire(j) for j in wires)}" fill="none" '
-                 f'stroke="{c["sky"]}" stroke-width="1.4"{shown}/>'
-                 f'<path class="{lit(card, k * n + 3, 3 * n, (k + 1) * n)}" d="{"".join(lane(off) for off in offs)}" fill="none" '
-                 f'stroke="{c["sky"]}" stroke-width="1.6"{shown}/>')
+        reach = draws(card, k * n + 1, 3 * n, 1, (k + 1) * n)  # the wires reach the router together
+        through = draws(card, k * n + 3, 3 * n, 2, (k + 1) * n)  # then the lanes run on to the model
+        card.add("".join(f'<path {reach} d="{wire(j)}" fill="none" stroke="{c["sky"]}" stroke-width="1.4"{shown}/>' for j in wires)
+                 + "".join(f'<path {through} d="{lane(off)}" fill="none" stroke="{c["sky"]}" stroke-width="1.6"{shown}/>' for off in offs))
         start = len(card.body)
         card.text((x1 + x2) / 2, y0 - 16, [("b", c["ink"], str(len(offs))), ("t", c["quiet"], " " + t["through"])], s.label, anchor="middle")
         card.since(start, f'class="{lit(card, k * n + 3, 3 * n, (k + 1) * n)}"{shown}')
-    track(card, f"M{x2 + 15} {y0}H{x3 - 15}", "sky", lit(card, 7, n), 3)
-    track(card, f"M{x3 + 15} {y0}H{xb - 12}", "sky", lit(card, 10, n), 3)
+    track(card, f"M{x2 + 15} {y0}H{x3 - 15}", "sky", 7, n, width=3)
+    track(card, f"M{x3 + 15} {y0}H{xb - 12}", "sky", 10, n, width=3)
     station(card, x1, y0, "funnel", "sky", lit(card, 2, n))
     station(card, x2, y0, "chip", "sky", lit(card, 5, n))
     station(card, x3, y0, "shield", "sky", lit(card, 8, n))
@@ -755,12 +871,12 @@ def money_path(card: Card, x: float, y: float, w: float, t: dict) -> None:
     card.add(f'<path d="{"".join(wire(j) for j in range(5))}" fill="none" stroke="{c["past"]}" stroke-width=".9"/>'
              f'<g fill="{c["past"]}">{buyers}</g>'
              # everybody reaches at once; then only the one who got the hold stays lit
-             f'<g class="{lit(card, 1, n, 3)}" opacity="0"><path d="{"".join(wire(j) for j in (0, 2, 3, 4))}" fill="none" '
-             f'stroke="{c["sky"]}" stroke-width="1.2"/></g>'
-             f'<g class="{lit(card, 1, n)}"><path d="{wire(1)}" fill="none" stroke="{c["sky"]}" stroke-width="1.4"/>'
-             f'<circle cx="{x + 2.5}" cy="{num(y0 - 7)}" r="2.6" fill="{c["sky"]}"/></g>')
+             + "".join(f'<path {draws(card, 1, n, 2, 5)} d="{wire(j)}" fill="none" stroke="{c["sky"]}" stroke-width="1.2" opacity="0"/>'
+                       for j in (0, 2, 3, 4))
+             + f'<path {draws(card, 1, n, 2)} d="{wire(1)}" fill="none" stroke="{c["sky"]}" stroke-width="1.4"/>'
+             f'<circle class="{lit(card, 1, n)}" cx="{x + 2.5}" cy="{num(y0 - 7)}" r="2.6" fill="{c["sky"]}"/>')
     for a, b, beat in ((0, 1, 5), (1, 2, 7), (2, 3, 11)):
-        track(card, f"M{num(xs[a] + 15)} {y0}H{num(xs[b] - 15)}", "sky", lit(card, beat, n), 3)
+        track(card, f"M{num(xs[a] + 15)} {y0}H{num(xs[b] - 15)}", "sky", beat, n, width=3)
     station(card, xs[0], y0, "seat", "sky", lit(card, 3, n))
     station(card, xs[1], y0, "receipt", "sky", lit(card, 6, n))
     # the card is captured in two stages: its ring closes one half at a time
@@ -769,8 +885,8 @@ def money_path(card: Card, x: float, y: float, w: float, t: dict) -> None:
              + pictogram(cx, y0, "card", c["past"])
              + f'<g class="{lit(card, 9, n)}"><circle cx="{num(cx)}" cy="{y0}" r="{r + 11}" fill="{glow(card, "sky")}"/>'
              f'<circle cx="{num(cx)}" cy="{y0}" r="{r}" fill="{c["node"]}"/>' + pictogram(cx, y0, "card", c["ink"])
-             + f'<path d="M{num(cx)} {y0 - r}a{r} {r} 0 0 1 0 {2 * r}" fill="none" stroke="{c["sky"]}" stroke-width="1.5"/></g>'
-             f'<path class="{lit(card, 8, n)}" d="M{num(cx)} {y0 + r}a{r} {r} 0 0 1 0 {-2 * r}" fill="none" stroke="{c["sky"]}" stroke-width="1.5"/>')
+             + f'<path {draws(card, 9, n)} d="M{num(cx)} {y0 - r}a{r} {r} 0 0 1 0 {2 * r}" fill="none" stroke="{c["sky"]}" stroke-width="1.5"/></g>'
+             f'<path {draws(card, 8, n)} d="M{num(cx)} {y0 + r}a{r} {r} 0 0 1 0 {-2 * r}" fill="none" stroke="{c["sky"]}" stroke-width="1.5"/>')
     station(card, xs[3], y0, "qr", "sky", lit(card, 12, n))
     card.add(f'<g class="{lit(card, 13, n)}"><circle cx="{num(xs[3] + 11)}" cy="{y0 - 11}" r="5.4" fill="{c["sky"]}" stroke="{c["well"]}" stroke-width="1.5"/>'
              f'<path d="M{num(xs[3] + 8.6)} {y0 - 10.8}l1.7 1.7 2.9-3.1" fill="none" stroke="{c["well"]}" stroke-width="1.5" '
@@ -808,14 +924,14 @@ def lanes(card: Card, x: float, y: float, w: float, t: dict, room: float = 146) 
     beat = sent_a + 1
     card.add(f'<path class="{lit(card, beat, n)}" d="M{cut + 6} {num(ya - 5.5)}l11 11m0 -11l-11 11" stroke="{c["alarm"]}" '
              f'stroke-width="2.2" stroke-linecap="round" fill="none"/>')
-    track(card, f"M{cut} {ya}C{cut + 16} {ya} {join - 16} {yb} {join} {yb}", "sun", lit(card, beat + 1, n), 2)
+    track(card, f"M{cut} {ya}C{cut + 16} {ya} {join - 16} {yb} {join} {yb}", "sun", beat + 1, n)
     for k in range(sent_b):  # B's pieces follow on, and the client reads them with no gap
         card.add(piece(sent_a + 2 + k, yb, "sun", beat + 2 + k) + piece(sent_a + k, yc, "sun", beat + 2 + k))
     done = beat + 2 + sent_b
     end_b, end_c = x0 + slots * pitch + 1, x0 + (sent_a + sent_b) * pitch + 1
     for ex, ly in ((end_b, yb), (end_c, yc)):
         card.add(f'<circle cx="{ex}" cy="{ly}" r="4" fill="{c["edge"]}"/><circle class="{lit(card, done, n)}" cx="{ex}" cy="{ly}" r="4" fill="{c["sun"]}"/>')
-    station(card, x + 13, ya, "", "sky", lit(card, 0, n, beat), r=13, letter="A", still=False)  # lit until it is cut off
+    station(card, x + 13, ya, "", "sky", lit(card, 0, n, beat + 1), r=13, letter="A", still=False)  # goes dark once it is cut off
     station(card, x + 13, yb, "", "sun", lit(card, beat + 1, n), r=13, letter="B")
     station(card, x + 13, yc, "screen", "ink", lit(card, 1, n), r=13)
     for ly, key in ((ya, "a"), (yb, "b"), (yc, "client")):
@@ -916,7 +1032,7 @@ def agents(card: Card, x: float, y: float, w: float, t: dict) -> None:
     card.add(pictogram(xs[0], y0, "robot", c["past"], 1.15) + f'<g class="{lit(card, first, n)}">'
              + pictogram(xs[0], y0, "robot", c["ink"], 1.15) + "</g>")
     for k in range(3):
-        track(card, f"M{xs[k] + 13} {y0}H{xs[k + 1] - 13}", "sky", lit(card, first + 1 + 3 * k, n), 3)
+        track(card, f"M{xs[k] + 13} {y0}H{xs[k + 1] - 13}", "sky", first + 1 + 3 * k, n, width=3)
     station_label(card, xs[0], y0 + 31, t["agent"], size=size)
     for k, (icon, name, words) in enumerate(t["stops"]):
         station(card, xs[k + 1], y0, icon, "sky", lit(card, first + 2 + 3 * k, n), r=13)
@@ -960,14 +1076,14 @@ def levels(card: Card, x: float, y: float, w: float, t: dict) -> float:
             bottom = card.para(x + 44, cy - 4 + s.cap_lead, what.replace("\n", " "), s.cap, w - 44, s.cap_lead) - s.cap_lead
             cy = max(bottom + 34, cy + 46)
         for k in range(len(rows) - 1):
-            track(card, f"M{x + 15} {num(centres[k] + 15)}V{num(centres[k + 1] - 15)}", "sky", lit(card, 3 + 4 * k, n), 3)
+            track(card, f"M{x + 15} {num(centres[k] + 15)}V{num(centres[k + 1] - 15)}", "sky", 3 + 4 * k, n, 2, 3)
         for k, row in enumerate(rows):
             station(card, x + 15, centres[k], row[0], "sky", lit(card, 1 + 4 * k, n))
         return bottom + 5
     y0, col = y + 47, w / len(rows)
     xs = [x + (k + .5) * col for k in range(len(rows))]  # each level stands in the middle of its share of the stage
     for k in range(len(rows) - 1):
-        track(card, f"M{num(xs[k] + 15)} {y0}H{num(xs[k + 1] - 15)}", "sky", lit(card, 3 + 4 * k, n), 3)
+        track(card, f"M{num(xs[k] + 15)} {y0}H{num(xs[k + 1] - 15)}", "sky", 3 + 4 * k, n, 2, 3)
     bottoms = []
     for k, (sx, row) in enumerate(zip(xs, rows)):
         station(card, sx, y0, row[0], "sky", lit(card, 1 + 4 * k, n))
@@ -1126,25 +1242,16 @@ def port(card: Card, x: float, y: float, quiet: bool) -> None:
 # --------------------------------------------------------------------------
 # Scenery
 # --------------------------------------------------------------------------
-# Motion. A browser redraws the whole poster every time anything in it changes,
-# so nothing here glides. Stars dip, the tower's rings and its red light switch,
-# cameras flash in the stadium and the lights in the shafts go down, all in
-# steps, and every step falls on the same beat of TICK seconds. However many
-# things change, the poster is redrawn at most 1 / TICK times a second. The
-# one exception is the shooting star, which glides for under a second, about
-# twice a minute.
-TICK = 0.25
-TWINKLE = (4, 4.75, 5.5, 6.25, 7, 8, 9.25, 10.5)  # seconds between two dips of a star; each a multiple of TICK
+# How often things in the city happen. Everything moves on the poster's one
+# clock (see Motion), so each of these is a whole number of beats.
+TWINKLE = (4, 4.75, 5.5, 6.25, 7, 8, 9.25, 10.5)  # seconds from one dimming of a star to the next
 FLASH = (5, 6.25, 7.5, 8.75, 5.75, 9.5, 7, 10.25)  # seconds between two flashes of one camera
 
 
-def beat(name: str, every: float, moment: str, rest: str, lasts: float = TICK) -> str:
-    """CSS for something that looks different for a moment at the start of
-    each round, and rests for the remainder of it. every and lasts are in seconds and
-    multiples of TICK."""
-    assert (every / TICK).is_integer() and (lasts / TICK).is_integer(), "off the beat"
-    return (f".{name}{{animation:{name} {num(every)}s step-end infinite}}"
-            f"@keyframes {name}{{0%{{{moment}}}{f'{100 * lasts / every:.4f}'.rstrip('0').rstrip('.')}%,to{{{rest}}}}}")
+def every(seconds: float) -> int:
+    """So many seconds in frames. It has to be a whole number of beats."""
+    assert (seconds / TICK).is_integer(), "off the beat"
+    return round(seconds / TICK) * FRAMES
 
 
 class Noise:
@@ -1297,7 +1404,9 @@ def scene(card: Card, margin: float) -> dict:
     gradient(card, "sk", "linear", (0, 0, 0, street),
              [(0, c["night"][0], 1), (.55, c["night"][1], 1), (1, c["night"][2], 1)])
     gradient(card, "hg", "radial", (W * .55, far_base + 30, W * .62), [(0, c["glow"], .2), (1, c["glow"], 0)])
-    card.body.insert(words_at, f'<rect width="{W}" height="{num(street)}" fill="url(#sk)"/>'
+    # The sky runs on under the road, and the road a pixel under the ground: where two flat shapes only
+    # touch, a screen whose pixels fall between them lets the page behind the picture shine through.
+    card.body.insert(words_at, f'<rect width="{W}" height="{num(street + 14)}" fill="url(#sk)"/>'
                                f'<rect width="{W}" height="{num(street)}" fill="url(#hg)"/>')
     words_at += 1
 
@@ -1446,9 +1555,9 @@ def scene(card: Card, margin: float) -> dict:
         f'<path d="M{x + dx} {num(y - 40)}L{x + dx * .1 - 16} {y}h32z" fill="#d8f4ff" fill-opacity=".07"/>'
         for dx in (-54, -32, 32, 54))
     flashes = ""
-    for j, (angle, every) in enumerate(zip((205, 238, 268, 300, 332, 18, 158, 96), FLASH)):  # cameras in the stands
+    for j, (angle, period) in enumerate(zip((205, 238, 268, 300, 332, 18, 158, 96), FLASH)):  # cameras in the stands
         fx, fy = x + 43 * math.cos(math.radians(angle)), y + 8.8 * math.sin(math.radians(angle))
-        flashes += (f'<g class="fl f{j}" opacity="0" style="animation-delay:-{num(TICK * rng.randrange(int(every / TICK)))}s">'
+        flashes += (f'<g class="fl f{j}" opacity="0" style="animation-delay:-{num(TICK * rng.randrange(int(period / TICK)))}s">'
                     f'<path d="M{num(fx - 2.4)} {num(fy)}h4.8M{num(fx)} {num(fy - 2.4)}v4.8" stroke="#fff" stroke-width=".8" stroke-linecap="round"/>'
                     f'<circle cx="{num(fx)}" cy="{num(fy)}" r="1" fill="#fff"/></g>')
     scenery.append(
@@ -1467,20 +1576,31 @@ def scene(card: Card, margin: float) -> dict:
         f'<circle cx="{num(W * at + (5 if back else -5))}" cy="{num(street + (10 if back else 4.5))}" r="1.3" fill="{c["beacon"]}"/>'
         for at, back in (((.11, False), (.37, True), (.58, False), (.87, True)) if wide else ((.14, False), (.5, True), (.84, False))))
     scenery.append(
-        f'<rect y="{num(street)}" width="{W}" height="14" fill="{c["road"]}"/>'
+        f'<rect y="{num(street)}" width="{W}" height="15" fill="{c["road"]}"/>'
         f'<path d="M0 {num(street + .5)}H{W}" stroke="{c["rim"]}"/>'
         f'<path d="M0 {num(street + 7.2)}H{W}" stroke="{c["rim"]}" stroke-width=".8" stroke-dasharray="9 13" stroke-opacity=".8"/>'
         f'{lamps}{cars}')
 
     card.body.insert(marks_at, "".join(scenery))
-    card.css += [beat(f"t{k}", every, "opacity:.2", "opacity:1") for k, every in enumerate(TWINKLE)]  # a star dips
-    card.css += [beat(f"f{j}", every, "opacity:1", "opacity:0") for j, every in enumerate(FLASH)]  # a camera flashes
+    # a star dims and comes back, more slowly than it went
+    # Everything in the city is slow, so it moves on every second frame. Only the shooting star is fast.
+    card.css += [moves(f"t{k}", every(period), [(0, "opacity:1", True), (10, "opacity:.22", True), (28, "opacity:1", False)], stride=2)
+                 for k, period in enumerate(TWINKLE)]
+    # a camera flashes and the flash dies away
+    card.css += [moves(f"f{j}", every(period), [(0, "opacity:1", True), (8, "opacity:0", False)], stride=2)
+                 for j, period in enumerate(FLASH)]
+    fly = 18  # frames the shooting star takes
     card.css += [
-        beat("rg", 3, "opacity:1", "opacity:.55", lasts=2 * TICK),  # a ring is bright for two beats, one beat after the ring inside it
-        beat("bk", 2, "opacity:.2", "opacity:1", lasts=1),  # the red light is off every other second
-        ".ss{animation:ss 24s linear infinite}@keyframes ss{0%,96.5%{opacity:0;transform:translate(0,0)}"
-        f"97.3%{{opacity:.9}}99.6%,to{{opacity:0;transform:translate({tx}px,{ty}px)}}}}",
+        # a ring swells bright and fades, one beat after the ring inside it, so a wave runs outwards
+        moves("rg", every(3), [(0, "opacity:.5", True), (4, "opacity:1", True), (20, "opacity:.5", False)], stride=2),
+        # the red light breathes
+        moves("bk", every(2), [(0, "opacity:1", True), (16, "opacity:.2", True), (34, "opacity:1", False)], stride=2),
+        # the shooting star: nothing for most of 24 seconds, then it flies and fades
+        moves("ss", every(24), [(every(24) - fly - 2, "opacity:0;transform:translate(0,0)", True),
+                                (every(24) - fly + 2, f"opacity:.9;transform:translate({num(tx * 4 / fly)}px,{num(ty * 4 / fly)}px)", True),
+                                (every(24) - 2, f"opacity:0;transform:translate({tx}px,{ty}px)", False)]),
     ]
+    card.mark(0, 0, street + 14)  # all of it lies above the ground
     return {"ground": street + 14, "tower": tower_x, "school": school_x, "stadium": stadium_x}
 
 
@@ -1527,6 +1647,7 @@ def poster(layout: str) -> Card:
     def caption(y: float, text: str) -> float:
         """Words that stand in the soil and mark a new depth: an arrow down and
         the words. Where there is room, a dotted line runs on to the right edge."""
+        start = len(card.body)
         card.add(f'<path d="M{T + 1} {num(y - 8)}l4.5 5 4.5-5" fill="none" stroke="{c["soilink"]}" stroke-width="1.6" '
                  f'stroke-linecap="round" stroke-linejoin="round"/>')
         end = card.para(T + 20, y, text, s.text, W - 2 * T - 20, s.text_lead, base=("m", c["ink"]))
@@ -1534,24 +1655,62 @@ def poster(layout: str) -> Card:
         if end - s.text_lead == y and reach < right - 40:  # the words take one line and leave room
             card.add(f'<path d="M{num(reach)} {num(y - 4.5)}H{num(right)}" stroke="{c["seam"]}" stroke-dasharray="2 4"/>')
         captions.append((y - s.text - 5, end - s.text_lead + 8))
+        card.mark(start, *captions[-1])
         return end
+
+    def room(top: float, draw) -> int:
+        """Draw a chamber with its top at top, note where it lies, and return its bottom edge."""
+        start = len(card.body)
+        bottom = round(draw())
+        card.mark(start, top, bottom)
+        return bottom
 
     def in_caption(y: float, reach: float) -> bool:
         return any(top - reach < y < bottom + reach for top, bottom in captions)
 
-    y = round(ground_y + 46)  # top of the first chambers; the shafts run down to here
+    def lap(joint: int) -> float:
+        """How much of the foot of the slice above joint number joint the next slice may cover, in px of the poster."""
+        return RAISE[joint] / SMALLEST[layout]
 
+    def near_joint(y: float, reach: float) -> bool:
+        return any(at - lap(k) - reach < y < at + reach for k, at in enumerate(card.cuts))
+
+    def cut(y: float, down: bool = False) -> int:
+        """Cut the poster at y, or at the nearest place above it (down: below it) that the layout allows."""
+        step = 1 if card.phone else GRID
+        at = int(-(-y // step) * step if down else y // step * step)
+        card.cuts.append(at)
+        return at
+
+    def strip(floor: float, text: str) -> int:
+        """A caption in a slice of its own, under a chamber whose bottom edge is at floor. Returns the slice's bottom."""
+        top = cut(floor + lap(len(card.cuts)) + 1, down=True)
+        end = caption(top + 34, text)
+        assert end - s.text_lead == top + 34, "the caption no longer fits on one line"
+        return cut(top + STRIP)
+
+    y = round(ground_y + 60)  # top of the first chambers; the shafts run down to here
+
+    # The poster is cut into seven slices, the same number in both layouts, because the README
+    # pairs them. Every cut runs through the soil: 6 px above the chamber under it, and far enough
+    # under the chamber above it that the foot of that slice is soil (see RAISE).
+    #   wide:   city | Almaty Seasons and DSS | Arlan School | a caption | Switchyard and Dastar | a caption | earlier jobs
+    #   phone:  city | Almaty Seasons | DSS | Arlan School | Switchyard | Dastar | earlier jobs
     if card.phone:
         w = W - 2 * M
         for p, spot in zip(production, ("tower", "stadium")):
             shafts.append((place[spot], y, False))
-            y = project(card, M, y, w, p, project_measure(card, w, p)) + GAP
+            cut(y - 6)
+            y = room(y, lambda: project(card, M, y, w, p, project_measure(card, w, p))) + GAP
         shafts.append((place["school"], y, True))
-        y = slim(card, M, y, w, arlan)
-        y = caption(y + 38, ground["open"]) - s.text_lead + 22
+        cut(y - 6)
+        y = room(y, lambda: slim(card, M, y, w, arlan))
+        y = round(caption(y + 38, ground["open"]) - s.text_lead + 22)
         for p in opensource:
-            y = project(card, M, y, w, p, project_measure(card, w, p)) + GAP
-        y -= GAP
+            cut(y - 6)
+            y = room(y, lambda: project(card, M, y, w, p, project_measure(card, w, p))) + GAP
+        y = round(caption(y - GAP + 40, ground["before"]) - s.text_lead + 20)
+        cut(y - 8)
     else:
         w = (W - 2 * M - GAP) / 2
         for specs, spots in ((production, ("tower", "stadium")), (opensource, None)):
@@ -1559,17 +1718,20 @@ def poster(layout: str) -> Card:
             shared = {key: max(m[key] for m in measures) for key in measures[0]}  # both chambers keep the same rows
             if spots:
                 shafts += [(place[spot], y, False) for spot in spots]
-            y = max(project(card, M + i * (w + GAP), y, w, p, shared) for i, p in enumerate(specs))
+                cut(y - 6)
+            y = room(y, lambda: max(project(card, M + i * (w + GAP), y, w, p, shared) for i, p in enumerate(specs)))
             if spots:
-                shafts.append((place["school"], y + GAP, True))
-                y = slim(card, M, y + GAP, W - 2 * M, arlan)
-                y = caption(y + 40, ground["open"]) - s.text_lead + 22
-    y = caption(y + 40, ground["before"]) - s.text_lead + 20
+                top = y + GAP + 4
+                shafts.append((place["school"], top, True))
+                cut(top - 6)
+                y = strip(room(top, lambda: slim(card, M, top, W - 2 * M, arlan)), ground["open"]) + 6
+        y = strip(y, ground["before"]) + 8
 
     # ---- the earlier jobs, as layers of rock: the older, the lower
     wave = Noise(31, 120)
     layers: list[str] = []
     tops = []
+    rock_at = len(card.body)
     for k, (name, years, text, kind) in enumerate(before):
         tops.append(y)
         card.text(T, y + 34, [("d", c["ink"], name)], 22, optical=True)
@@ -1583,65 +1745,102 @@ def poster(layout: str) -> Card:
                                strong=("m", c["ink"])) - s.note_lead
             y = max(bottom, y + 52) + 20
     H = round(y + 18)
+    card.mark(rock_at, tops[0], H)
     for k, top in enumerate(tops):  # each layer runs from its wavy top edge to the bottom of the poster
         edge = [(x, top + 3.5 * wave(x + 400 * k) + 2 * math.sin(x / 37 + k)) for x in range(0, int(W) + 9, 8)]
-        layers.append(f'<path d="{outline(edge + [(W, H), (0, H)])}Z" fill="{c["layers"][min(k, len(c["layers"]) - 1)]}"/>'
-                      f'<path d="{outline(edge)}" fill="none" stroke="{c["seam"]}" stroke-width="1.2"/>')
+        layers.append(Piece(f'<path d="{outline(edge + [(W, H), (0, H)])}Z" fill="{c["layers"][min(k, len(c["layers"]) - 1)]}"/>'
+                            f'<path d="{outline(edge)}" fill="none" stroke="{c["seam"]}" stroke-width="1.2"/>', top - 7, H))
 
     # ---- the ground: soil, seams and stones, then the shafts from the street down to the chambers
     rng = random.Random(3)
     gradient(card, "so", "linear", (0, ground_y, 0, tops[0]),
              [(0, c["soil"][0], 1), (.45, c["soil"][1], 1), (1, c["soil"][2], 1)])
-    under = [f'<rect y="{num(ground_y)}" width="{W}" height="{num(H - ground_y)}" fill="url(#so)"/>'
-             f'<rect y="{num(ground_y)}" width="{W}" height="7" fill="{c["gravel"]}"/>'
-             f'<path d="M0 {num(ground_y + 3.5)}H{W}" stroke="{c["stone"]}" stroke-width="3" stroke-dasharray="2 5" stroke-linecap="round"/>']
+    under = [Piece(f'<rect y="{num(ground_y)}" width="{W}" height="{num(H - ground_y)}" fill="url(#so)"/>', ground_y, H, through=True),
+             Piece(f'<rect y="{num(ground_y)}" width="{W}" height="7" fill="{c["gravel"]}"/>'
+                   f'<path d="M0 {num(ground_y + 3.5)}H{W}" stroke="{c["stone"]}" stroke-width="3" stroke-dasharray="2 5" stroke-linecap="round"/>',
+                   ground_y, ground_y + 7)]
     depth = ground_y + 40
     while depth < tops[0] - 30:  # seams: thin wavy lines across the soil
         seam = Noise(rng.randrange(999), rng.choice((90, 140, 200)))
         line = (f'<path d="{outline([(x, depth + 7 * seam(x)) for x in range(0, int(W) + 9, 8)])}" fill="none" '
                 f'stroke="{c["seam"]}" stroke-opacity="{num(rng.uniform(.35, .8))}"/>')
-        if not in_caption(depth, 8):
-            under.append(line)
+        if not in_caption(depth, 8) and not near_joint(depth, 9):
+            under.append(Piece(line, depth - 8, depth + 8))
         depth += rng.uniform(46, 110)
-    stones = "".join(f"M{num(sx)} {num(sy)}a{num(rx)} {num(rx * .62)} 0 1 0 {num(2 * rx)} 0a{num(rx)} {num(rx * .62)} 0 1 0 {num(-2 * rx)} 0z"
-                     for sx, sy, rx in ((rng.uniform(0, W), rng.uniform(ground_y + 12, tops[0] - 8), rng.choice((1, 1.3, 1.6, 2.2, 3.4)))
-                                        for _ in range(int((tops[0] - ground_y) * W / 2600))) if not in_caption(sy, 3))
-    under.append(f'<path d="{stones}" fill="{c["stone"]}"/>')
+    stones: dict[int, str] = {}  # in bands of 100 px, so that a slice carries only the stones near it
+    for sx, sy, rx in ((rng.uniform(0, W), rng.uniform(ground_y + 12, tops[0] - 8), rng.choice((1, 1.3, 1.6, 2.2, 3.4)))
+                       for _ in range(int((tops[0] - ground_y) * W / 2600))):
+        if not in_caption(sy, 3) and not near_joint(sy, 3):
+            stones[int(sy // 100)] = stones.get(int(sy // 100), "") + (
+                f"M{num(sx)} {num(sy)}a{num(rx)} {num(rx * .62)} 0 1 0 {num(2 * rx)} 0a{num(rx)} {num(rx * .62)} 0 1 0 {num(-2 * rx)} 0z")
+    under += [Piece(f'<path d="{d}" fill="{c["stone"]}"/>', 100 * band - 3, 100 * band + 103, through=True)
+              for band, d in sorted(stones.items())]
     under += layers
     for k, (x, bottom, quiet) in enumerate(shafts):
         top = ground_y
-        under.append(f'<path d="M{num(x - 5)} {num(top)}V{num(bottom)}M{num(x + 5)} {num(top)}V{num(bottom)}" stroke="{c["edge"]}"/>'
-                     f'<rect x="{num(x - 4.5)}" y="{num(top)}" width="9" height="{num(bottom - top)}" fill="{c["shaft"]}"/>'
-                     f'<path d="M{num(x - 3)} {num(top + 6)}V{num(bottom)}" stroke="{c["rule"]}" stroke-width="6" stroke-dasharray="1 7"/>'
-                     f'<path d="M{num(x - 8)} {num(top)}h16" stroke="{c["rim"]}" stroke-width="2"/>')
+        under.append(Piece(
+            f'<path d="M{num(x - 5)} {num(top)}V{num(bottom)}M{num(x + 5)} {num(top)}V{num(bottom)}" stroke="{c["edge"]}"/>'
+            f'<rect x="{num(x - 4.5)}" y="{num(top)}" width="9" height="{num(bottom - top)}" fill="{c["shaft"]}"/>'
+            f'<path d="M{num(x - 3)} {num(top + 6)}V{num(bottom)}" stroke="{c["rule"]}" stroke-width="6" stroke-dasharray="1 7"/>'
+            f'<path d="M{num(x - 8)} {num(top)}h16" stroke="{c["rim"]}" stroke-width="2"/>', top - 1, bottom, through=True))
         if quiet:  # no traffic to show here: a ring
-            under.append(f'<circle cx="{num(x)}" cy="{num(top + 14)}" r="2.6" fill="none" stroke="{c["sky"]}" stroke-width="1.3"/>')
-        else:  # in use: a light goes down, one step on every beat, and starts again at the street
+            under.append(Piece(f'<circle cx="{num(x)}" cy="{num(top + 14)}" r="2.6" fill="none" stroke="{c["sky"]}" stroke-width="1.3"/>',
+                               top + 10, top + 18))
+        else:  # in use: a light glides down and starts again at the street. It stays inside the city's slice.
             gradient(card, f"eg{k}", "radial", (x, top + 9, 8), [(0, c["sky"], .6), (1, c["sky"], 0)])
-            under.append(f'<g class="el" style="animation-delay:-{num(TICK * 4 * k)}s"><circle cx="{num(x)}" cy="{num(top + 9)}" r="8" fill="url(#eg{k})"/>'
-                         f'<circle cx="{num(x)}" cy="{num(top + 9)}" r="2.4" fill="{c["sky"]}"/></g>')
-    card.body.insert(under_at, "".join(under))
+            under.append(Piece(
+                f'<g class="el" style="animation-delay:-{num(TICK * 4 * k)}s"><circle cx="{num(x)}" cy="{num(top + 9)}" r="8" fill="url(#eg{k})"/>'
+                f'<circle cx="{num(x)}" cy="{num(top + 9)}" r="2.4" fill="{c["sky"]}"/></g>', top, top + 38))
+    card.body[under_at:under_at] = under
     for x, bottom, quiet in shafts:
+        start = len(card.body)
         port(card, x, bottom, quiet)
-    steps = 8  # the part of a shaft above the first chamber is 46 px long; the light takes it in 8 steps of 4 px
-    card.css.append(f".el{{animation:el {num(TICK * steps)}s steps({steps}) infinite}}@keyframes el{{to{{transform:translateY({4 * steps}px)}}}}")
+        card.mark(start, bottom - 5, bottom + 5)
+    # The part of a shaft above the first chamber is 60 px long, and the poster is cut some 52 px down it.
+    # The light comes up out of the dark at the street, glides down for two seconds and goes out well
+    # before the cut, above the foot of the slice that the next slice covers.
+    card.css.append(moves("el", every(2), [(0, "opacity:0;transform:translateY(0)", True), (6, "opacity:1;transform:translateY(3px)", True),
+                                           (34, "opacity:1;transform:translateY(17px)", True), (42, "opacity:0;transform:translateY(21px)", False)],
+                          stride=2))
 
-    # the whole poster has rounded corners
+    # the whole poster has rounded corners; each slice is clipped by the same shape
     card.defs.append(f'<clipPath id="pc"><rect width="{W}" height="{H}" rx="14"/></clipPath>')
-    card.since(0, 'clip-path="url(#pc)"')
     card.css.append("@media (prefers-reduced-motion:reduce){.tw,.fl,.rg,.bk,.ss,.el,.st{animation:none}}")
     card.h = H
     return card
 
 
+MOVING = re.compile(r'class="(?:tw|fl|rg|bk|ss|el|st)[ "]')  # the classes of everything that moves
+
+
 def main() -> None:
     out = ROOT / "assets"
     out.mkdir(exist_ok=True)
-    for layout, name in (("wide", "poster.svg"), ("phone", "poster-phone.svg")):
+    for old in out.glob("*.svg"):
+        old.unlink()
+    for layout in ("wide", "phone"):
         card = poster(layout)
-        path = out / name
-        path.write_text(card.render(), encoding="utf-8")
-        print(f"{path.relative_to(ROOT)}  {card.w}x{card.h}  {path.stat().st_size / 1024:.0f} KB")
+        slices = card.slices()
+        assert len(slices) == len(RAISE) + 1, "the README pairs seven slices"
+        assert min(bottom - top for top, bottom in slices) >= STRIP, "a slice is lower than a line of the README can be"
+        for part in card.body:  # a moving piece in two slices would have both redrawn for it
+            homes = [k for k, (top, bottom) in enumerate(slices, 1) if part.span[0] < bottom and part.span[1] > top]
+            assert len(homes) == 1 or not MOVING.search(part), f"a moving piece lies across slices {homes}"
+            for k, at in enumerate(card.cuts):  # the next slice covers the foot of this one: only ground may lie there
+                foot = at - RAISE[k] / SMALLEST[layout]
+                assert part.through or not part.span[0] < at or part.span[1] <= foot, (
+                    f"joint {k + 1} at {at}: something ends at {num(part.span[1])}, in the foot that starts at {num(foot)}")
+        sizes = []
+        for k, (top, bottom) in enumerate(slices, 1):
+            path = out / f"{layout}-{k}.svg"
+            path.write_text(card.render(top, bottom), encoding="utf-8")
+            sizes.append(path.stat().st_size)
+        heights = " + ".join(str(bottom - top) for top, bottom in slices)
+        print(f"assets/{layout}-1.svg to {layout}-{len(slices)}.svg  {card.w} x {card.h} ({heights})  {sum(sizes) / 1024:.0f} KB")
+    # The joints only close if README.md puts every picture one <sup> deeper than the one before (see RAISE).
+    stack = (ROOT / "README.md").read_text(encoding="utf-8").split("</p>")[0]
+    if len(re.findall(r"<sup><picture>", stack)) != len(RAISE) or stack.count("<picture>") != len(RAISE) + 1:
+        print("README.md no longer nests the seven pictures in <sup>: the slices will not close up")
 
 
 if __name__ == "__main__":
